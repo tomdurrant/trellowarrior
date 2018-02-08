@@ -50,12 +50,14 @@ def parse_config(config_file):
                 project = {}
                 for key in ['trello_board_name', 'trello_doing_list',
                             'trello_done_list', 'trello_todo_list',
-                            'tw_project_name']:
+                            'tw_project_name', 'trello_member_id']:
                     if conf.has_option(sync_project, key):
                         project[key] = conf.get(sync_project, key)
 
                 if not conf.has_option(sync_project, 'trello_done_list'):
                      project['trello_done_list'] = 'Done'
+                if not conf.has_option(sync_project, 'trello_member_id'):
+                     project['trello_member_id'] = None
                 sync_projects.append(project)
             else:
                 logger.info('Skipping %s, missing tw_project_name or trello_board_name' % sync_project)
@@ -184,16 +186,19 @@ def delete_trello_card(trello_card_id):
         logger.exception('Cannot find Trello card')
         print('Cannot find Trello card with ID {0} deleted in Taskwarrior. Maybe you deleted it in Trello too.'.format(trello_card_id))
 
-def upload_tw_task(tw_task, trello_list):
+def upload_tw_task(tw_task, trello_list, trello_member_id=None):
     """
     Upload all contents of task to list creating a new card and storing cardid
 
     :tw_task: TaskWarrior task object
     :trello_list: Trello list object
+    :trello_member_id: Assign uploaded tasks to this member
     """
     new_trello_card = trello_list.add_card(tw_task['description'])
     if tw_task['due']:
         new_trello_card.set_due(tw_task['due'])
+    if trello_member_id:
+        new_trello_card.assign(trello_member_id)
     # Save the Trello Card ID into Task
     tw_task['trelloid'] = new_trello_card.id
     tw_task.save()
@@ -242,7 +247,7 @@ def get_tw_task_by_trello_id(trello_id):
         logger.error('Duplicated Trello ID {0} in Taskwarrior tasks. Trello IDs must be unique, please fix it before sync.'.format(trello_id))
         raise ValueError('Duplicated Trello ID {0} in Taskwarrior tasks. Trello IDs must be unique, please fix it before sync.'.format(trello_id))
 
-def upload_new_tw_tasks(trello_lists, project_name, board_name, todo_list_name, doing_list_name, done_list_name):
+def upload_new_tw_tasks(trello_lists, project_name, board_name, todo_list_name, doing_list_name, done_list_name, trello_member_id=None):
     """
     Upload new TaskWarrior tasks that never uploaded before
 
@@ -252,29 +257,37 @@ def upload_new_tw_tasks(trello_lists, project_name, board_name, todo_list_name, 
     :todo_list_name: name of list for todo taks
     :doing_list_name: name of list for active tasks
     :done_list_name: name of list for done tasks
+    :trello_member_id: Assign uploaded tasks to this member
     """
     task_warrior = TaskWarrior(taskrc_location=taskwarrior_taskrc_location, data_location=taskwarrior_data_location)
     tw_pending_tasks   = task_warrior.tasks.pending().filter(project=project_name, trelloid=None)
     tw_completed_tasks = task_warrior.tasks.completed().filter(project=project_name, trelloid=None)
     for tw_pending_task in tw_pending_tasks:
         if tw_pending_task.active:
-            upload_tw_task(tw_pending_task, get_trello_list(board_name, trello_lists, doing_list_name))
+            upload_tw_task(tw_pending_task, get_trello_list(board_name,
+                trello_lists, doing_list_name),
+                trello_member_id=trello_member_id)
             tw_pending_task['trellolistname'] = doing_list_name
             tw_pending_task.save()
         else:
             if tw_pending_task['trellolistname']:
-                upload_tw_task(tw_pending_task, get_trello_list(board_name, trello_lists, tw_pending_task['trellolistname']))
+                upload_tw_task(tw_pending_task, get_trello_list(board_name,
+                    trello_lists, tw_pending_task['trellolistname']),
+                    trello_member_id=trello_member_id)
             else:
-                upload_tw_task(tw_pending_task, get_trello_list(board_name, trello_lists, todo_list_name))
+                upload_tw_task(tw_pending_task, get_trello_list(board_name,
+                    trello_lists, todo_list_name),
+                    trello_member_id=trello_member_id)
                 tw_pending_task['trellolistname'] = todo_list_name
                 tw_pending_task.save()
     for tw_completed_task in tw_completed_tasks:
-        upload_tw_task(tw_completed_task, get_trello_list(board_name, trello_lists, done_list_name))
+        upload_tw_task(tw_completed_task, get_trello_list(board_name,
+            trello_lists, done_list_name), trello_member_id)
         tw_completed_task['trellolistname'] = done_list_name
         tw_completed_task.save()
     logger.info('Uploaded new cards: %s pending, %s completed' % (len(tw_pending_tasks), len(tw_completed_tasks)))
 
-def sync_trello_tw(trello_lists, project_name, board_name, todo_list_name, doing_list_name, done_list_name):
+def sync_trello_tw(trello_lists, project_name, board_name, todo_list_name, doing_list_name, done_list_name, trello_member_id=None):
     """
     Download from Trello all cards and sync with TaskWarrior tasks
 
@@ -284,6 +297,7 @@ def sync_trello_tw(trello_lists, project_name, board_name, todo_list_name, doing
     :todo_list_name: name of list for todo taks
     :doing_list_name: name of list for active tasks
     :done_list_name: name of list for done tasks
+    :trello_member_id: Only sync cards assigned to this member
     """
     task_warrior = TaskWarrior(taskrc_location=taskwarrior_taskrc_location, data_location=taskwarrior_data_location)
     # Get all Taskwarrior deleted tasks and seek for ones that have trelloid (locally deleted)
@@ -301,6 +315,10 @@ def sync_trello_tw(trello_lists, project_name, board_name, todo_list_name, doing
             # Fetch all data from card
             trello_card.fetch(False)
             trello_cards_ids.append(trello_card.id)
+            if trello_member_id:
+                if trello_member_id not in trello_card.member_ids:
+                    logging.debug("Not syncing as member does not match %s" % trello_member_id)
+                    continue
             tw_task = get_tw_task_by_trello_id(trello_card.id)
             if tw_task:
                 sync_task_card(tw_task, trello_card, board_name, trello_lists, list_name, todo_list_name, doing_list_name, done_list_name)
@@ -434,15 +452,19 @@ def main():
                        project['trello_board_name'],
                        project['trello_todo_list'],
                        project['trello_doing_list'],
-                       project['trello_done_list'])
+                       project['trello_done_list'],
+                       project['trello_member_id'],
+                       )
         # Upload new Taskwarrior tasks
         upload_new_tw_tasks(trello_lists,
                             project['tw_project_name'],
                             project['trello_board_name'],
                             project['trello_todo_list'],
                             project['trello_doing_list'],
-                            project['trello_done_list'])
+                            project['trello_done_list'],
+                            project['trello_member_id'],
+                            )
 
 if __name__ == "__main__":
-    if parse_config('conf/trellowarrior.conf'):
+    if parse_config('/home/tdurrant/.trellowarrior.conf'):
         main()
