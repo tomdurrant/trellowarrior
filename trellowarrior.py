@@ -374,6 +374,28 @@ def sync_task_card(tw_task, trello_card, board_name, trello_lists, list_name, to
         if trello_card.due_date:
             tw_task['due'] = trello_card.due_date
             tw_task_modified = True
+    # Task tags - Trello labels
+    if (tw_task['tags'] or trello_card.labels):
+        if tw_task['modified'] > trello_card.date_last_activity:
+            for tag in tw_task['tags']:
+                label = get_label(trello_card, tag)
+                if label not in trello_card.labels:
+                    trello_card.add_label(label)
+            for label in trello_card.labels:
+                if label.name not in tw_task['tags']:
+                    trello_card.remove_label(label)
+        else:
+            for label in trello_card.labels:
+                if label.name not in tw_task['tags']:
+                    tw_task['tags'].add(label.name)
+                    tw_task_modified = True
+            remove = set()
+            for tag in tw_task['tags']:
+                label = get_label(trello_card, tag)
+                if label not in trello_card.labels:
+                    remove.add(tag)
+                    tw_task_modified = True
+            tw_task['tags'] = tw_task['tags'].difference_update(remove)
     # Task List Name / Status - Trello List name
     if tw_task['trellolistname'] == doing_list_name or tw_task['trellolistname'] == done_list_name:
         if tw_task.pending and not tw_task.active and tw_task['modified'] > trello_card.date_last_activity:
@@ -441,6 +463,13 @@ def sync_task_card(tw_task, trello_card, board_name, trello_lists, list_name, to
     # Save Task warrior changes (if any)
     if tw_task_modified:
         tw_task.save()
+
+def get_label(trello_card, label):
+    for lab in trello_card.board.get_labels():
+        if lab.name == label:
+            return lab
+    logger.info('Label %s does not exist, creating' % label)
+    return trello_card.board.add_label(label, 'green')
 
 def main():
     for project in sync_projects:
