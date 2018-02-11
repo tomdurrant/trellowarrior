@@ -464,6 +464,25 @@ def sync_task_card(tw_task, trello_card, board_name, trello_lists, list_name, to
     if tw_task_modified:
         tw_task.save()
 
+def sync_tagged_cards(board_name_src, todo_list_name_src, doing_list_name_src, done_list_name_src,
+                      board_name_dest, todo_list_name_dest, doing_list_name_dest, done_list_name_dest,
+                     sync_label):
+    trello_lists_src  = get_trello_lists(board_name_src)
+    trello_lists_dest = get_trello_lists(board_name_dest)
+    trello_dic_cards_src  = get_trello_dic_cards(trello_lists_src)
+    trello_dic_cards_dest = get_trello_dic_cards(trello_lists_dest)
+    trello_cards_ids = []
+    for list_name in trello_dic_cards_src:
+        for trello_card in trello_dic_cards_src[list_name]:
+            label = get_label(trello_card, sync_label)
+            if label not in trello_card.labels:
+                continue
+            logger.info("Syncing %s" % trello_card.name)
+            # # Fetch all data from card
+            # trello_card.fetch(False)
+            # trello_cards_ids.append(trello_card.id)
+    #if  trello_card.date_last_activity > trello_card.date_last_activity:
+
 def get_label(trello_card, label):
     for lab in trello_card.board.get_labels():
         if lab.name == label:
