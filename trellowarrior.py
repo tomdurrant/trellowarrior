@@ -26,7 +26,9 @@ def parse_config(config_file):
     global trello_api_key, trello_api_secret, trello_token, trello_token_secret
     global taskwarrior_taskrc_location, taskwarrior_data_location
     global sync_projects
-    sync_projects = []
+    global link_projects
+    sync_projects = {}
+    link_projects = {}
     conf = RawConfigParser()
     try:
         conf.read(config_file)
@@ -58,12 +60,38 @@ def parse_config(config_file):
                      project['trello_done_list'] = 'Done'
                 if not conf.has_option(sync_project, 'trello_member_id'):
                      project['trello_member_id'] = None
-                sync_projects.append(project)
+                sync_projects.update({sync_project: project})
             else:
                 logger.info('Skipping %s, missing tw_project_name or trello_board_name' % sync_project)
                 return False
         else:
             logger.info('Missing config for %s' % sync_project)
+            return False
+
+    for link_project in conf.get('DEFAULT', 'link_projects').split():
+        if conf.has_section(link_project):
+            if (conf.has_option(link_project, 'tw_project_name') and
+                conf.has_option(link_project, 'trello_board_name') and
+                conf.has_option(link_project, 'link_to')
+                ):
+                project = {}
+                for key in ['trello_board_name', 'trello_doing_list',
+                            'trello_done_list', 'trello_todo_list',
+                            'tw_project_name', 'trello_member_id',
+                            'link_to', 'link_label']:
+                    if conf.has_option(link_project, key):
+                        project[key] = conf.get(link_project, key)
+
+                if not conf.has_option(link_project, 'trello_done_list'):
+                     project['trello_done_list'] = 'Done'
+                if not conf.has_option(link_project, 'trello_member_id'):
+                     project['trello_member_id'] = None
+                link_projects.update({link_project: project})
+            else:
+                logger.info('Skipping %s, missing tw_project_name trello_board_name or link_to' % link_project)
+                return False
+        else:
+            logger.info('Missing config for %s' % link_project)
             return False
 
     trello_api_key = conf.get('DEFAULT', 'trello_api_key')
@@ -464,24 +492,46 @@ def sync_task_card(tw_task, trello_card, board_name, trello_lists, list_name, to
     if tw_task_modified:
         tw_task.save()
 
-def sync_tagged_cards(board_name_src, todo_list_name_src, doing_list_name_src, done_list_name_src,
-                      board_name_dest, todo_list_name_dest, doing_list_name_dest, done_list_name_dest,
-                     sync_label):
-    trello_lists_src  = get_trello_lists(board_name_src)
-    trello_lists_dest = get_trello_lists(board_name_dest)
+def link_tagged_cards(board_name, todo_list_name, doing_list_name, done_list_name,
+                     link_label):
+    trello_lists_src  = get_trello_lists(board_name['src'])
+    trello_lists_dest = get_trello_lists(board_name['dest'])
     trello_dic_cards_src  = get_trello_dic_cards(trello_lists_src)
     trello_dic_cards_dest = get_trello_dic_cards(trello_lists_dest)
     trello_cards_ids = []
-    for list_name in trello_dic_cards_src:
-        for trello_card in trello_dic_cards_src[list_name]:
-            label = get_label(trello_card, sync_label)
+    #for list_name in trello_dic_cards_src:
+    for list_name in [todo_list_name, doing_list_name, done_list_name]:
+        for trello_card in trello_dic_cards_src[list_name['src']]:
+            label = get_label(trello_card, link_label)
             if label not in trello_card.labels:
                 continue
-            logger.info("Syncing %s" % trello_card.name)
-            # # Fetch all data from card
-            # trello_card.fetch(False)
-            # trello_cards_ids.append(trello_card.id)
+            logger.info("Linking %s" % trello_card.name)
+            # Fetch all data from card
+            trello_card.fetch(False)
+            exists = False
+            #for list_name_dest in trello_dic_cards_dest:
+            for trello_card_dest in trello_dic_cards_dest[list_name['dest']]:
+                if trello_card.name == trello_card_dest.name:
+                    logger.info("Card %s exists" % trello_card.name)
+                    exists = True
+            if not exists:
+                logger.info("Creating new %s " % trello_card.name)
+                trello_list_dest = get_trello_list(board_name['dest'], trello_lists_dest, list_name['dest'])
+                new_trello_card = trello_list_dest.add_card(trello_card.name)
+                new_trello_card.attach(url=trello_card.url)
+            # Assign member of card to link
+            for member_id in trello_card.member_ids:
+                new_trello_card.assign(member_id)
     #if  trello_card.date_last_activity > trello_card.date_last_activity:
+
+def link_project_cards(src, dest, link_label):
+    link_tagged_cards(
+            {'src': src['trello_board_name'], 'dest': dest['trello_board_name']},
+            {'src': src['trello_todo_list'], 'dest': dest['trello_todo_list']},
+            {'src': src['trello_doing_list'], 'dest': dest['trello_doing_list']},
+            {'src': src['trello_done_list'], 'dest': dest['trello_done_list']},
+            link_label=link_label
+            )
 
 def get_label(trello_card, label):
     for lab in trello_card.board.get_labels():
@@ -491,8 +541,9 @@ def get_label(trello_card, label):
     return trello_card.board.add_label(label, 'green')
 
 def main():
-    for project in sync_projects:
+    for dkey in sync_projects:
         # Get all Trello lists
+        project = sync_projects[dkey]
         trello_lists = get_trello_lists(project['trello_board_name'])
         # Do sync Trello - Taskwarrior
         sync_trello_tw(trello_lists,
@@ -512,6 +563,12 @@ def main():
                             project['trello_done_list'],
                             project['trello_member_id'],
                             )
+
+    for dkey in link_projects:
+        project = link_projects[dkey]
+        link_project_cards(project,
+                           sync_projects[project['link_to']],
+                           project['link_label'])
 
 if __name__ == "__main__":
     if parse_config('/home/tdurrant/.trellowarrior.conf'):
