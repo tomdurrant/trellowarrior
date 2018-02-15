@@ -541,7 +541,7 @@ def link_tagged_cards(board_name, todo_list_name, doing_list_name, done_list_nam
             #for list_name_dest in trello_dic_cards_dest:
             for trello_card_dest in trello_dic_cards_dest[list_name['dest']]:
                 if trello_card_dest.name == trello_card_dest.name:
-                    logger.info("Card %s exists" % trello_card.name)
+                    logger.debug("Card %s exists" % trello_card.name)
                     exists = True
             if not exists:
                 logger.info("Creating new %s " % trello_card.name)
