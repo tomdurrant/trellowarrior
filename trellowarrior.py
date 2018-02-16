@@ -13,7 +13,7 @@ from tasklib.task import Task
 from tasklib.backends import TaskWarrior
 from trello import TrelloClient
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 # logger.basicConfig(level=logging.WARNING)
 
@@ -534,13 +534,13 @@ def link_tagged_cards(board_name, todo_list_name, doing_list_name, done_list_nam
             label = get_label(trello_card, link_label, create_missing_label=create_trello_labels)
             if not label or label not in trello_card.labels:
                 continue
-            logger.info("Linking %s" % trello_card.name)
+            logger.debug("%s has sync label" % trello_card.name)
             # Fetch all data from card
             trello_card.fetch(False)
             exists = False
             #for list_name_dest in trello_dic_cards_dest:
             for trello_card_dest in trello_dic_cards_dest[list_name['dest']]:
-                if trello_card_dest.name == trello_card_dest.name:
+                if trello_card.name == trello_card_dest.name:
                     logger.debug("Card %s exists" % trello_card.name)
                     exists = True
             if not exists:
@@ -548,6 +548,7 @@ def link_tagged_cards(board_name, todo_list_name, doing_list_name, done_list_nam
                 trello_list_dest = get_trello_list(board_name['dest'], trello_lists_dest, list_name['dest'])
                 new_trello_card = trello_list_dest.add_card(trello_card.name)
                 new_trello_card.attach(url=trello_card.url)
+                trello_card.attach(url=new_trello_card.url)
                 # Assign member of card to link
                 for member_id in trello_card.member_ids:
                     new_trello_card.assign(member_id)
