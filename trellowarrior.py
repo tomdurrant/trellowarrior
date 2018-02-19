@@ -433,7 +433,8 @@ def sync_task_card(tw_task, trello_card, board_name, trello_lists, list_name,
     if (tw_task['tags'] or trello_card.labels):
         if tw_task['modified'] > trello_card.date_last_activity:
             for tag in tw_task['tags']:
-                label = get_label(trello_card, tag, create_missing_label=create_trello_labels)
+                label = get_label(trello_card, tag,
+                                  create_missing_label=create_trello_labels)
                 if label and label not in trello_card.labels:
                     trello_card.add_label(label)
             for label in trello_card.labels:
@@ -451,8 +452,9 @@ def sync_task_card(tw_task, trello_card, board_name, trello_lists, list_name,
                     remove.add(tag)
                     tw_task_modified = True
             tw_task['tags'] = tw_task['tags'].difference_update(remove)
-        tw_task.save()
-        tw_task_modified = False # Set false cause just saved
+        if tw_task_modified:
+            tw_task.save()
+            tw_task_modified = False # Set false cause just saved
     # Task List Name / Status - Trello List name
     if tw_task['trellolistname'] == doing_list_name or tw_task['trellolistname'] == done_list_name:
         if tw_task.pending and not tw_task.active and tw_task['modified'] > trello_card.date_last_activity:
@@ -582,6 +584,11 @@ def process_tagged_cards(board_name_src, board_name_dest, process_list,
                 # Assign member of card to link
                 for member_id in trello_card.member_ids:
                     new_trello_card.assign(member_id)
+                for label in trello_card.labels:
+                    new_label = get_label(new_trello_card, label.name,
+                                      create_missing_label=create_trello_labels)
+                    if new_label and new_label not in new_trello_card.labels:
+                        new_trello_card.add_label(new_label)
 
 def link_project_cards(src, dest, link_label):
     link_tagged_cards(
@@ -608,26 +615,26 @@ def main():
         project = sync_projects[dkey]
         trello_lists = get_trello_lists(project['trello_board_name'])
         # Do sync Trello - Taskwarrior
-        # sync_trello_tw(trello_lists,
-                       # project['tw_project_name'],
-                       # project['trello_board_name'],
-                       # project['trello_todo_list'],
-                       # project['trello_doing_list'],
-                       # project['trello_done_list'],
-                       # project['trello_member_id'],
-                       # project['create_trello_labels'],
-                       # project['ignore_lists'],
-                       # )
-        # # Upload new Taskwarrior tasks
-        # upload_new_tw_tasks(trello_lists,
-                            # project['tw_project_name'],
-                            # project['trello_board_name'],
-                            # project['trello_todo_list'],
-                            # project['trello_doing_list'],
-                            # project['trello_done_list'],
-                            # project['trello_member_id'],
-                            # project['create_trello_labels'],
-                            # )
+        sync_trello_tw(trello_lists,
+                       project['tw_project_name'],
+                       project['trello_board_name'],
+                       project['trello_todo_list'],
+                       project['trello_doing_list'],
+                       project['trello_done_list'],
+                       project['trello_member_id'],
+                       project['create_trello_labels'],
+                       project['ignore_lists'],
+                       )
+        # Upload new Taskwarrior tasks
+        upload_new_tw_tasks(trello_lists,
+                            project['tw_project_name'],
+                            project['trello_board_name'],
+                            project['trello_todo_list'],
+                            project['trello_doing_list'],
+                            project['trello_done_list'],
+                            project['trello_member_id'],
+                            project['create_trello_labels'],
+                            )
 
     # for dkey in link_projects:
         # project = link_projects[dkey]
