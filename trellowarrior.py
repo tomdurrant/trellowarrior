@@ -13,7 +13,7 @@ from tasklib.task import Task
 from tasklib.backends import TaskWarrior
 from trello import TrelloClient
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 # logger.basicConfig(level=logging.WARNING)
 
@@ -52,11 +52,15 @@ def parse_config(config_file):
                 project = {}
                 for key in ['trello_board_name', 'trello_doing_list',
                             'trello_done_list', 'trello_todo_list',
-                            'tw_project_name', 'trello_member_id',
-                            'create_trello_labels']:
+                            'trello_member_id',
+                            'create_trello_labels', 'required_label',
+                            'required_tag']:
                     if conf.has_option(sync_project, key):
                         project[key] = conf.get(sync_project, key)
-
+                if conf.has_option(sync_project, 'tw_project_name'):
+                     project['tw_project_name'] = conf.get(sync_project, 'tw_project_name').split(',')
+                if conf.has_option(sync_project, 'incoming_tw_project'):
+                     project['incoming_tw_project'] = conf.get(sync_project, 'incoming_tw_project')
                 if not conf.has_option(sync_project, 'trello_done_list'):
                      project['trello_done_list'] = 'Done'
                 if not conf.has_option(sync_project, 'trello_member_id'):
@@ -67,6 +71,10 @@ def parse_config(config_file):
                      project['ignore_lists'] = conf.get(sync_project, 'ignore_lists').split(',')
                 else:
                      project['ignore_lists'] = []
+                if not conf.has_option(sync_project, 'required_label'):
+                     project['required_label'] = False
+                if not conf.has_option(sync_project, 'required_tag'):
+                     project['required_tag'] = False
                 sync_projects.update({sync_project: project})
             else:
                 logger.info('Skipping %s, missing tw_project_name or trello_board_name' % sync_project)
@@ -147,9 +155,7 @@ def create_trello_board(board_name):
     """
     trello_client = TrelloClient(
         api_key=trello_api_key,
-        api_secret=trello_api_secret,
-        token=trello_token,
-        token_secret=trello_token_secret)
+        api_secret=trello_api_secret, token=trello_token, token_secret=trello_token_secret)
     logger.info('Created board %s' % board_name)
     return trello_client.add_board(board_name)
 
@@ -290,7 +296,7 @@ def get_tw_task_by_trello_id(trello_id):
 
 def upload_new_tw_tasks(trello_lists, project_name, board_name, todo_list_name,
         doing_list_name, done_list_name, trello_member_id=None,
-        create_trello_labels=False):
+        create_trello_labels=False, required_tag=False):
     """
     Upload new TaskWarrior tasks that never uploaded before
 
@@ -303,8 +309,15 @@ def upload_new_tw_tasks(trello_lists, project_name, board_name, todo_list_name,
     :trello_member_id: Assign uploaded tasks to this member
     """
     task_warrior = TaskWarrior(taskrc_location=taskwarrior_taskrc_location, data_location=taskwarrior_data_location)
-    tw_pending_tasks   = task_warrior.tasks.pending().filter(project=project_name, trelloid=None)
-    tw_completed_tasks = task_warrior.tasks.completed().filter(project=project_name, trelloid=None)
+    tw_pending_tasks=[]
+    tw_completed_tasks=[]
+    for project in project_name:
+        if required_tag:
+            tw_pending_tasks   += task_warrior.tasks.pending().filter(project=project, trelloid=None, tag=required_tag)
+            tw_completed_tasks += task_warrior.tasks.completed().filter(project=project, trelloid=None, tag=required_tag)
+        else:
+            tw_pending_tasks  += task_warrior.tasks.pending().filter(project=project, trelloid=None)
+            tw_completed_tasks += task_warrior.tasks.completed().filter(project=project, trelloid=None)
     for tw_pending_task in tw_pending_tasks:
         if tw_pending_task.active:
             upload_tw_task(tw_pending_task, get_trello_list(board_name,
@@ -336,7 +349,8 @@ def upload_new_tw_tasks(trello_lists, project_name, board_name, todo_list_name,
 
 def sync_trello_tw(trello_lists, project_name, board_name, todo_list_name,
         doing_list_name, done_list_name, trello_member_id=None,
-        create_trello_labels=False, ignore_lists=[]):
+        create_trello_labels=False, ignore_lists=[], required_label=None,
+        incoming_tw_project=None):
     """
     Download from Trello all cards and sync with TaskWarrior tasks
 
@@ -348,6 +362,10 @@ def sync_trello_tw(trello_lists, project_name, board_name, todo_list_name,
     :done_list_name: name of list for done tasks
     :trello_member_id: Only sync cards assigned to this member
     """
+    if len(project_name) > 1 and incoming_tw_project == None:
+        raise Exception("Multiple projects specified %s, but no incoming_tw_project specified" )
+    if not incoming_tw_project:
+        incoming_tw_project = project_name[0]
     task_warrior = TaskWarrior(taskrc_location=taskwarrior_taskrc_location, data_location=taskwarrior_data_location)
     # Get all Taskwarrior deleted tasks and seek for ones that have trelloid (locally deleted)
     tw_deleted_tasks = task_warrior.tasks.filter(project=project_name,status='deleted')
@@ -370,6 +388,11 @@ def sync_trello_tw(trello_lists, project_name, board_name, todo_list_name,
                 if trello_member_id not in trello_card.member_ids:
                     logging.debug("Not syncing as member does not match %s" % trello_member_id)
                     continue
+            if required_label:
+                label = get_label(trello_card, required_label)
+                if not label or label not in trello_card.labels:
+                    logger.info("Not syncing card %s as it does not have %s" % (trello_card.name, required_label))
+                    continue
             tw_task = get_tw_task_by_trello_id(trello_card.id)
             if tw_task:
                 sync_task_card(tw_task, trello_card, board_name, trello_lists,
@@ -377,10 +400,16 @@ def sync_trello_tw(trello_lists, project_name, board_name, todo_list_name,
                         done_list_name, create_trello_labels=create_trello_labels)
             else:
                 # Download new Trello cards that not present in Taskwarrior
-                download_trello_card(project_name, list_name, trello_card, task_warrior, doing_list_name, done_list_name)
+                download_trello_card(incoming_tw_project, list_name, trello_card, task_warrior, doing_list_name, done_list_name)
     # Compare Trello and TaskWarrior tasks for remove deleted Trello tasks in Taskwarrior
-    tw_pending_tasks_ids   = set((task['trelloid'] for task in task_warrior.tasks.pending().filter(project=project_name)))
-    tw_completed_tasks_ids = set((task['trelloid'] for task in task_warrior.tasks.completed().filter(project=project_name)))
+    tw_pending = []
+    tw_completed = []
+    for project in list(project_name):
+        print("Getting tasks for %s" % project)
+        tw_pending += task_warrior.tasks.pending().filter(project=project)
+        tw_completed += task_warrior.tasks.completed().filter(project=project)
+    tw_pending_tasks_ids   = set((task['trelloid'] for task in tw_pending))
+    tw_completed_tasks_ids = set((task['trelloid'] for task in tw_completed))
     tw_tasks_ids = tw_pending_tasks_ids | tw_completed_tasks_ids
     tw_tasks_ids.discard(None) # Remove None element if present (new tasks created with Taskwarrior)
     trello_cards_ids = set(trello_cards_ids)
@@ -439,7 +468,8 @@ def sync_task_card(tw_task, trello_card, board_name, trello_lists, list_name,
                     trello_card.add_label(label)
             for label in trello_card.labels:
                 if label.name not in tw_task['tags']:
-                    trello_card.remove_label(label)
+                    pass
+                    #trello_card.remove_label(label)
         else:
             for label in trello_card.labels:
                 if label.name not in tw_task['tags']:
@@ -448,9 +478,10 @@ def sync_task_card(tw_task, trello_card, board_name, trello_lists, list_name,
             remove = set()
             for tag in tw_task['tags']:
                 label = get_label(trello_card, tag, create_missing_label=create_trello_labels)
-                if label not in trello_card.labels:
-                    remove.add(tag)
-                    tw_task_modified = True
+                if label != None:
+                    if label not in trello_card.labels:
+                        remove.add(tag)
+                        tw_task_modified = True
             tw_task['tags'] = tw_task['tags'].difference_update(remove)
         if tw_task_modified:
             tw_task.save()
@@ -624,6 +655,8 @@ def main():
                        project['trello_member_id'],
                        project['create_trello_labels'],
                        project['ignore_lists'],
+                       project['required_label'],
+                       project['incoming_tw_project'],
                        )
         # Upload new Taskwarrior tasks
         upload_new_tw_tasks(trello_lists,
@@ -634,6 +667,7 @@ def main():
                             project['trello_done_list'],
                             project['trello_member_id'],
                             project['create_trello_labels'],
+                            project['required_tag'],
                             )
 
     # for dkey in link_projects:
@@ -641,12 +675,12 @@ def main():
         # link_project_cards(project,
                            # sync_projects[project['link_to']],
                            # project['link_label'])
-    for dkey in link_projects:
-        project = link_projects[dkey]
-        process_tagged_cards(project['trello_board_name'],
-                           sync_projects[project['link_to']]['trello_board_name'],
-                           'Incoming',
-                           project['link_label'])
+    # for dkey in link_projects:
+    #     project = link_projects[dkey]
+    #     process_tagged_cards(project['trello_board_name'],
+    #                        sync_projects[project['link_to']]['trello_board_name'],
+    #                        'Incoming',
+    #                        project['link_label'])
 
 if __name__ == "__main__":
     if parse_config('/home/tdurrant/.trellowarrior.conf'):
